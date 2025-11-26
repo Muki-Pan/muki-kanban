@@ -1,0 +1,1064 @@
+<!DOCTYPE html>
+<html class="dark" lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Muki's Debug Kanban</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400&display=swap" rel="stylesheet"/>
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght@20..48,100..700&display=swap" rel="stylesheet"/>
+    <!-- 网页 title 图标 -->
+    <link rel="icon" href="https://www.muki.work/favicon.ico" />
+
+    <script>
+        tailwind.config = {
+            darkMode: "class",
+            theme: {
+                extend: {
+                    colors: {
+                        primary: "var(--color-primary)",
+                        background: "#121212", 
+                        surface: "#1E1E1E",
+                        surface_hover: "#27272A",
+                        border: "#333333",
+                        text: "#F5F5F5",
+                        muted: "#A0A0A0",
+                        danger: "#EF4444"
+                    },
+                    fontFamily: {
+                        sans: ["Inter", "sans-serif"],
+                        mono: ["JetBrains Mono", "monospace"]
+                    }
+                }
+            }
+        };
+    </script>
+    <style>
+        :root {
+            --color-primary: #663399;
+        }
+        body { background-color: #121212; color: #F5F5F5; }
+        
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: #333; border-radius: 2px; }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover { background: #555; }
+
+        .drag-over { border-color: var(--color-primary) !important; background-color: rgba(255,255,255,0.02) !important; }
+        .card-dragging { opacity: 0.4; transform: scale(0.98); }
+        .task-enter { animation: slideIn 0.2s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        @keyframes slideIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+
+        .toast-enter { animation: toastIn 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        .toast-exit { animation: toastOut 0.3s cubic-bezier(0.16, 1, 0.3, 1) forwards; }
+        @keyframes toastIn { from { transform: translateY(100%); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        @keyframes toastOut { from { transform: translateY(0); opacity: 1; } to { transform: translateY(100%); opacity: 0; } }
+        
+        .progress-bar { transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1); }
+
+        /* Tooltip 单独 DOM，不被 overflow 裁切 */
+        #stats-tooltip {
+            position: fixed;
+            z-index: 999;
+            background-color: #333;
+            color: #F5F5F5;
+            font-size: 10px;
+            font-weight: 500;
+            padding: 6px 8px;
+            border-radius: 6px;
+            white-space: nowrap;
+            pointer-events: none;
+            opacity: 0;
+            transform: translate(-50%, -100%);
+            transition: opacity 0.1s;
+        }
+
+        /* 去掉浏览器默认橙蓝双框，保留紫色 ring */
+        input, textarea {
+            outline: 2px solid transparent !important;
+        }
+        input:focus, textarea:focus,
+        input:focus-visible, textarea:focus-visible {
+            outline: 2px solid transparent !important;
+        }
+
+        /* 文本被“刷选”时的高亮效果，跟随主题色 */
+        ::selection {
+            /* 用 color-mix 把主题色 + 透明混合，得到带透明度的高亮 */
+            background-color: color-mix(in srgb, var(--color-primary) 55%, transparent);
+            color: #ffffff;
+        }
+        ::-moz-selection {
+            background-color: color-mix(in srgb, var(--color-primary) 55%, transparent);
+            color: #ffffff;
+        }
+
+        /* 输入框 / 文本域里刷选，高亮稍微再强一点 */
+        input::selection,
+        textarea::selection {
+            background-color: color-mix(in srgb, var(--color-primary) 75%, #111827);
+            color: #f9fafb;
+        }
+        input::-moz-selection,
+        textarea::-moz-selection {
+            background-color: color-mix(in srgb, var(--color-primary) 75%, #111827);
+            color: #f9fafb;
+        }
+
+
+    </style>
+</head>
+<body class="font-sans h-screen flex flex-col overflow-hidden selection:bg-primary/80 selection:text-white">
+
+    <header class="flex shrink-0 items-center justify-between border-b border-border bg-surface px-6 py-3 z-20 shadow-sm h-16">
+        <div class="flex items-center gap-3 text-muted">
+            <div class="flex items-center gap-2 hover:text-white cursor-pointer transition-colors group" onclick="app.navigateTo('projects')">
+                <span class="material-symbols-outlined text-[20px] group-hover:text-primary transition-colors">grid_view</span>
+                <span class="font-medium text-sm">All Projects</span>
+            </div>
+            
+            <div id="breadcrumb-area" class="hidden flex items-center gap-3 transition-all opacity-0">
+                <span class="material-symbols-outlined text-[16px] text-border">chevron_right</span>
+                <span id="header-project-name" class="text-text font-bold text-lg tracking-tight"></span>
+            </div>
+
+            <!-- 总任务 / 完成任务汇总 -->
+            <div id="header-summary" class="ml-4 text-[11px] text-muted font-mono hidden md:inline-flex items-center gap-1"></div>
+        </div>
+        
+        <div class="flex items-center gap-4">
+            <!-- 顶部搜索框：title/breadcrumb 之后 -->
+            <div id="header-search" class="relative hidden md:block"></div>
+
+            <!-- Palette 放在搜索框后 -->
+            <div class="relative group py-4">
+                <button class="flex items-center justify-center text-muted hover:text-primary transition-colors">
+                    <span class="material-symbols-outlined text-[20px]">palette</span>
+                </button>
+                <div id="theme-menu" class="absolute right-1/2 transform translate-x-1/2 top-10 hidden group-hover:flex bg-surface border border-border p-2 rounded-xl shadow-xl gap-2 z-50 transition-opacity duration-200 opacity-0 group-hover:opacity-100">
+                    <button onclick="app.setTheme('#663399')" class="w-6 h-6 rounded-full bg-[#663399] hover:scale-110 transition-transform ring-1 ring-white/10" title="Plum"></button>
+                    <button onclick="app.setTheme('#3B82F6')" class="w-6 h-6 rounded-full bg-[#3B82F6] hover:scale-110 transition-transform ring-1 ring-white/10" title="Blue"></button>
+                    <button onclick="app.setTheme('#10B981')" class="w-6 h-6 rounded-full bg-[#10B981] hover:scale-110 transition-transform ring-1 ring-white/10" title="Emerald"></button>
+                    <button onclick="app.setTheme('#F43F5E')" class="w-6 h-6 rounded-full bg-[#F43F5E] hover:scale-110 transition-transform ring-1 ring-white/10" title="Rose"></button>
+                    <button onclick="app.setTheme('#F59E0B')" class="w-6 h-6 rounded-full bg-[#F59E0B] hover:scale-110 transition-transform ring-1 ring-white/10" title="Amber"></button>
+                </div>
+            </div>
+
+            <!-- Copy / Export 等操作 -->
+            <div id="header-actions" class="flex items-center gap-3"></div>
+        </div>
+    </header>
+
+    <main id="app-container" class="flex-grow overflow-hidden relative bg-background min-h-0">
+    </main>
+
+    <footer class="shrink-0 border-t border-border bg-surface py-2 px-6 flex justify-between items-center text-[10px] text-muted font-mono tracking-wide">
+        <div>Muki's Debug Kanban v1.5</div>
+        <div class="flex gap-4 text-muted text-[10px]">
+            <a href="https://mukkkkki.notion.site/2b788d5e6576804ea0e6f76059f300af?embed=true" target="_blank" 
+            class="hover:text-primary transition-colors text-[10px]">
+            🐞 Report a bug
+            </a>
+            <span>·</span>
+        <div class="flex gap-1">
+            <span>&copy; 2025</span>
+            <a href="https://www.muki.work/about" target="_blank" class="hover:text-primary transition-colors">Muki Pan</a>
+        </div>
+    </footer>
+
+    <!-- Toast 容器：纵向叠加 -->
+    <div id="toast-container" class="fixed bottom-6 inset-x-0 z-50 flex flex-col items-center gap-2 pointer-events-none"></div>
+
+    <div id="modal-overlay" class="fixed inset-0 bg-black/80 backdrop-blur-sm z-50 hidden flex items-center justify-center opacity-0 transition-opacity duration-200">
+        <div id="modal-content" class="bg-surface border border-border rounded-2xl shadow-2xl w-full max-w-md transform scale-95 transition-transform duration-200 p-6">
+            <h3 id="modal-title" class="text-xl font-bold mb-2 text-white">Title</h3>
+            <p id="modal-desc" class="text-sm text-muted mb-6">Description</p>
+            <div id="modal-body" class="mb-6"></div>
+            <div class="flex justify-end gap-3" id="modal-actions"></div>
+        </div>
+    </div>
+
+    <!-- Tooltip DOM -->
+    <div id="stats-tooltip"></div>
+
+    <template id="view-projects">
+        <div class="h-full overflow-y-auto p-8 lg:p-12 fade-in">
+            <div class="mx-auto max-w-5xl">
+                <div class="flex items-center justify-between mb-10">
+                    <h1 class="text-3xl font-bold text-text tracking-tight">My Projects</h1>
+                    <div class="flex gap-3">
+                        <label class="cursor-pointer flex items-center gap-2 bg-surface hover:bg-surface_hover border border-border text-muted hover:text-text px-4 py-2 rounded-lg text-sm transition-all shadow-sm">
+                            <span class="material-symbols-outlined text-[18px]">upload_file</span>
+                            <span>Import CSV</span>
+                            <input type="file" accept=".csv" class="hidden" onchange="app.importCSV(this)">
+                        </label>
+                        <button onclick="app.createProject()" class="flex items-center gap-2 bg-primary hover:bg-primary/80 text-white px-4 py-2 rounded-lg text-sm font-bold shadow-lg shadow-primary/20 transition-all">
+                            <span class="material-symbols-outlined text-[18px]">add</span>
+                            <span>Create Project</span>
+                        </button>
+                    </div>
+                </div>
+                <div id="project-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5"></div>
+            </div>
+        </div>
+    </template>
+
+    <script>
+        const $ = (sel) => document.querySelector(sel);
+        const Utils = {
+            uuid: () => Date.now().toString(36) + Math.random().toString(36).substr(2),
+            date: () => new Date().toISOString(),
+            escapeCSV: (str) => `"${(str || '').replace(/"/g, '""')}"`
+        };
+
+        const Store = {
+            getProjects: () => JSON.parse(localStorage.getItem('uidb_projects') || '[]'),
+            saveProjects: (data) => localStorage.setItem('uidb_projects', JSON.stringify(data)),
+            getTasks: () => JSON.parse(localStorage.getItem('uidb_tasks') || '[]'),
+            saveTasks: (data) => localStorage.setItem('uidb_tasks', JSON.stringify(data)),
+            getTheme: () => localStorage.getItem('uidb_theme') || '#663399',
+            saveTheme: (color) => localStorage.setItem('uidb_theme', color)
+        };
+
+        const Toast = {
+            // type: 'success' | 'info' | 'warning' | 'error'
+            show(msg, type = 'success') {
+                const container = $('#toast-container');
+                const el = document.createElement('div');
+
+                let icon = 'check_circle';
+                let color = 'text-green-400';
+
+                if (type === 'error') {
+                    icon = 'error';
+                    color = 'text-red-400';
+                } else if (type === 'warning') {
+                    icon = 'warning';
+                    color = 'text-amber-400';
+                } else if (type === 'info') {
+                    icon = 'info';
+                    color = 'text-blue-400';
+                }
+
+                el.className = `bg-surface border border-border shadow-2xl rounded-full px-5 py-3 flex items-center gap-3 text-sm font-medium text-text toast-enter pointer-events-auto`;
+                el.innerHTML = `<span class="material-symbols-outlined text-[20px] ${color}">${icon}</span><span>${msg}</span>`;
+                
+                container.appendChild(el);
+                setTimeout(() => {
+                    el.classList.remove('toast-enter');
+                    el.classList.add('toast-exit');
+                    setTimeout(() => el.remove(), 300);
+                }, 3000);
+            }
+        };
+
+        const Modal = {
+            el: $('#modal-overlay'),
+            content: $('#modal-content'),
+            _keyHandler: null,  
+            show({ title, desc, bodyHTML, actions }) {
+                $('#modal-title').textContent = title;
+                $('#modal-desc').textContent = desc || '';
+                $('#modal-body').innerHTML = bodyHTML || '';
+                const actionContainer = $('#modal-actions');
+                actionContainer.innerHTML = '';
+                actions.forEach((btn, index) => {   
+                    const b = document.createElement('button');
+                    b.className = `px-4 py-2 rounded-lg text-sm font-medium transition-colors ${btn.class}`;
+                    b.textContent = btn.text;
+                    // 最后一个按钮，视为默认“确定”
+                    if (index === actions.length - 1) {
+                        b.dataset.primary = 'true';
+                    }
+
+                    b.onclick = () => { if(btn.onClick) btn.onClick(); if(btn.close !== false) this.close(); };
+                    actionContainer.appendChild(b);
+                });
+                this.el.classList.remove('hidden');
+                void this.el.offsetWidth; 
+                this.el.classList.remove('opacity-0');
+                this.content.classList.remove('scale-95');
+                const input = this.content.querySelector('input, textarea');
+                if(input) setTimeout(() => input.focus(), 100);
+                // ⬇️ 这里是新增的：Enter 确定，Esc 关闭
+                this._keyHandler = (e) => {
+                    if (e.key === 'Enter') {
+                        // 输入框里的 Enter 也希望触发确定，所以不 return
+                        e.preventDefault();
+                        const primaryBtn =
+                            document.querySelector('#modal-actions button[data-primary="true"]') ||
+                            document.querySelector('#modal-actions button:last-child');
+                        if (primaryBtn) primaryBtn.click();
+                    } else if (e.key === 'Escape') {
+                        e.preventDefault();
+                        this.close();
+                    }
+                };
+                document.addEventListener('keydown', this._keyHandler);
+
+            },
+            close() {
+                this.el.classList.add('opacity-0');
+                this.content.classList.add('scale-95');
+                setTimeout(() => this.el.classList.add('hidden'), 200);
+
+                if (this._keyHandler) {
+                    document.removeEventListener('keydown', this._keyHandler);
+                    this._keyHandler = null;
+                }
+            }
+
+        };
+
+        const App = {
+            currentProjectId: null,
+            filterQuery: "",
+            history: {
+                past: [],
+                future: [],
+                limit: 20
+            },
+
+            init() {
+                this.applyTheme(Store.getTheme());
+
+                $('#modal-overlay').addEventListener('click', (e) => {
+                    if(e.target === $('#modal-overlay')) Modal.close();
+                });
+
+                window.onclick = (e) => {
+                    if (!e.target.matches('.material-symbols-outlined')) {
+                        document.querySelectorAll('.dropdown-menu').forEach(el => el.classList.add('hidden'));
+                    }
+                };
+
+                this.initThemeMenu();
+                this.initStatsTooltip();
+                this.navigateTo('projects');
+                // 全局撤销 / 重做快捷键
+                document.addEventListener('keydown', (e) => {
+                    // 输入框 / textarea 里打字时，不抢浏览器自带的撤销
+                    const active = document.activeElement;
+                    const tag = active && active.tagName;
+                    if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+
+                    const isCmdOrCtrl = e.metaKey || e.ctrlKey;
+                    if (!isCmdOrCtrl) return;
+
+                    if (e.key === 'z' || e.key === 'Z') {
+                        e.preventDefault();
+                        if (e.shiftKey) {
+                            this.redo();
+                        } else {
+                            this.undo();
+                        }
+                    }
+                });
+
+            },
+
+
+            pushHistory() {
+                const snapshot = {
+                    projects: Store.getProjects(),
+                    tasks: Store.getTasks(),
+                    currentProjectId: this.currentProjectId
+                };
+
+                this.history.past.push(snapshot);
+                if (this.history.past.length > this.history.limit) {
+                    this.history.past.shift();
+                }
+                // 一旦有新的操作，清空未来
+                this.history.future = [];
+            },
+
+            undo() {
+                if (this.history.past.length === 0) {
+                    Toast.show("Nothing to undo", "info");
+                    return;
+                }
+
+                const current = {
+                    projects: Store.getProjects(),
+                    tasks: Store.getTasks(),
+                    currentProjectId: this.currentProjectId
+                };
+                this.history.future.push(current);
+
+                const snapshot = this.history.past.pop();
+                Store.saveProjects(snapshot.projects);
+                Store.saveTasks(snapshot.tasks);
+                this.currentProjectId = snapshot.currentProjectId || null;
+
+                if (this.currentProjectId) {
+                    this.navigateTo('board', { id: this.currentProjectId });
+                } else {
+                    this.navigateTo('projects');
+                }
+
+                Toast.show("Undo", "info");
+            },
+
+            redo() {
+                if (this.history.future.length === 0) {
+                    Toast.show("Nothing to redo", "info");
+                    return;
+                }
+
+                const current = {
+                    projects: Store.getProjects(),
+                    tasks: Store.getTasks(),
+                    currentProjectId: this.currentProjectId
+                };
+                this.history.past.push(current);
+
+                const snapshot = this.history.future.pop();
+                Store.saveProjects(snapshot.projects);
+                Store.saveTasks(snapshot.tasks);
+                this.currentProjectId = snapshot.currentProjectId || null;
+
+                if (this.currentProjectId) {
+                    this.navigateTo('board', { id: this.currentProjectId });
+                } else {
+                    this.navigateTo('projects');
+                }
+
+                Toast.show("Redo", "info");
+            },
+
+
+            initThemeMenu() {
+                const menu = document.getElementById('theme-menu');
+                if (!menu) return;
+                const wrapper = menu.parentElement;
+
+                wrapper.addEventListener('mouseenter', () => {
+                    menu.style.left = "50%";
+                    menu.style.right = "auto";
+                    menu.style.transform = "translateX(-50%)";
+
+                    requestAnimationFrame(() => {
+                        const rect = menu.getBoundingClientRect();
+                        const padding = 8;
+
+                        if (rect.right > window.innerWidth - padding) {
+                            menu.style.left = "auto";
+                            menu.style.right = padding + "px";
+                            menu.style.transform = "translateX(0)";
+                        }
+
+                        if (rect.left < padding) {
+                            menu.style.left = padding + "px";
+                            menu.style.right = "auto";
+                            menu.style.transform = "translateX(0)";
+                        }
+                    });
+                });
+            },
+
+            initStatsTooltip() {
+                const tooltip = $('#stats-tooltip');
+
+                const show = (target) => {
+                    const stats = target.getAttribute('data-stats') || '';
+                    if (!stats) return;
+                    const rect = target.getBoundingClientRect();
+                    tooltip.textContent = stats;
+                    tooltip.style.left = (rect.left + rect.width / 2) + 'px';
+                    tooltip.style.top = (rect.top - 6) + 'px';
+                    tooltip.style.opacity = '1';
+                };
+
+                const hide = () => {
+                    tooltip.style.opacity = '0';
+                };
+
+                document.addEventListener('mouseenter', (e) => {
+                    const t = e.target;
+                    if (t && t.nodeType === 1 && t.matches && t.matches('[data-stats]')) show(t);
+                }, true);
+
+                document.addEventListener('mouseleave', (e) => {
+                    const t = e.target;
+                    if (t && t.nodeType === 1 && t.matches && t.matches('[data-stats]')) hide();
+                }, true);
+            },
+
+            applyTheme(color) {
+                document.documentElement.style.setProperty('--color-primary', color);
+            },
+
+            setTheme(color) {
+                this.applyTheme(color);
+                Store.saveTheme(color);
+                Toast.show("Theme updated", "info");
+            },
+
+            navigateTo(view, params = {}) {
+                const container = $('#app-container');
+                const breadArea = $('#breadcrumb-area');
+                const headerActions = $('#header-actions');
+                const headerSearch = $('#header-search');
+                const headerSummary = $('#header-summary');
+                
+                if (view === 'projects') {
+                    this.currentProjectId = null;
+                    container.innerHTML = ''; 
+                    breadArea.classList.add('hidden', 'opacity-0');
+                    breadArea.classList.remove('flex', 'opacity-100');
+                    headerActions.innerHTML = ''; 
+                    headerSearch.innerHTML = '';
+                    headerSummary.textContent = '';
+
+                    const template = document.getElementById('view-projects').content.cloneNode(true);
+                    this.renderProjects(template);
+                    container.appendChild(template);
+                } 
+                else if (view === 'board') {
+                    this.currentProjectId = params.id;
+                    this.filterQuery = "";
+                    const projects = Store.getProjects();
+                    const project = projects.find(p => p.id === params.id);
+                    
+                    container.innerHTML = `
+                        <div class="h-full overflow-x-auto overflow-y-hidden pt-4 lg:pt-4 px-4 lg:px-8 pb-4">
+                            <div class="grid h-full min-w-[1000px] grid-cols-3 gap-6">
+                                ${['low', 'medium', 'high'].map(type => {
+                                    const colorClass = type === 'low' ? 'bg-green-500' : type === 'medium' ? 'bg-yellow-500' : 'bg-red-500';
+                                    return `
+                                <div class="flex flex-col bg-surface rounded-xl border border-border h-full max-h-full min-h-0 shadow-sm overflow-hidden relative">
+                                   <div class="relative h-1 w-full bg-white/10">
+                                        <div id="progress-${type}" class="progress-bar absolute left-0 top-0 h-full" style="width: 0%; background-color: var(--color-primary)"></div>
+                                    </div>
+
+                                    <div class="p-4 border-b border-border flex justify-between items-center shrink-0">
+                                        <div class="flex items-center gap-2 font-bold capitalize text-text tracking-wide">
+                                            <span class="w-2.5 h-2.5 rounded-full ${colorClass}"></span> ${type}
+                                        </div>
+                                        <span id="count-${type}" class="text-[10px] font-mono bg-white/5 px-2 py-0.5 rounded text-muted relative cursor-default" data-stats="">0</span>
+                                    </div>
+                                    <div id="list-${type}" class="flex-grow overflow-y-auto p-3 space-y-2 custom-scrollbar relative" 
+                                         ondrop="app.drop(event, '${type}')" 
+                                         ondragover="app.allowDrop(event)"></div>
+                                    <div class="p-3 border-t border-border shrink-0 bg-surface z-10 sticky bottom-0">
+                                        <textarea rows="1" placeholder="+ Add task" 
+                                            class="w-full bg-background/50 border border-transparent rounded-lg px-3 py-2.5 text-sm text-text placeholder-muted/50 focus:bg-surface_hover focus:ring-2 focus:ring-primary focus:border-primary outline-none resize-none overflow-hidden transition-all"
+                                            oninput="this.style.height='auto';this.style.height=this.scrollHeight+'px'"
+                                            onkeydown="app.handleAddTask(event, '${type}')"></textarea>
+                                    </div>
+                                </div>`;
+                                }).join('')}
+                            </div>
+                        </div>
+                    `;
+
+                    breadArea.classList.remove('hidden', 'opacity-0');
+                    breadArea.classList.add('flex', 'opacity-100');
+                    $('#header-project-name').textContent = project ? project.name : '';
+
+                    // 顶部搜索框内容
+                    headerSearch.innerHTML = `
+                        <span class="material-symbols-outlined text-[16px] text-muted absolute left-2 top-1/2 -translate-y-1/2">search</span>
+                        <input
+                            type="text"
+                            placeholder="Search tasks..."
+                            class="pl-7 pr-2 py-1.5 bg-background/50 border border-border rounded-lg text-xs text-text placeholder-muted/60 focus:ring-1 focus:ring-primary focus:border-primary outline-none"
+                            oninput="app.setFilterQuery(this.value)"
+                        />
+                    `;
+
+                    headerActions.innerHTML = `
+                        <button onclick="app.copyBoardForAI()" class="flex items-center gap-2 text-muted hover:text-text px-3 py-1.5 rounded-lg transition-all text-xs font-medium border border-transparent hover:bg-white/5 hover:border-border">
+                            <span class="material-symbols-outlined text-[18px]">content_copy</span> Copy for AI
+                        </button>
+                        <button onclick="app.exportCSV()" class="flex items-center gap-2 text-muted hover:text-text px-3 py-1.5 rounded-lg transition-all text-xs font-medium border border-transparent hover:bg-white/5 hover:border-border">
+                            <span class="material-symbols-outlined text-[18px]">download</span> Export CSV
+                        </button>
+                    `;
+
+                    this.renderBoardLists();
+                }
+            },
+
+            renderProjects(container) {
+                const projects = Store.getProjects();
+                const list = container.querySelector('#project-list');
+                
+                if (projects.length === 0) {
+                    list.innerHTML = `<div class="col-span-full text-center text-muted py-20 bg-surface/30 rounded-3xl border border-dashed border-border">
+                        <span class="material-symbols-outlined text-4xl mb-4 opacity-30">folder_open</span>
+                        <p class="text-lg">No projects yet</p>
+                    </div>`;
+                    return;
+                }
+
+                // ... 在 App.renderProjects 函数内 ...
+
+                list.innerHTML = projects.map(p => `
+                    <div class="group relative bg-surface border border-border hover:border-primary/50 hover:shadow-lg hover:shadow-primary/5 rounded-2xl p-6 transition-all duration-300 cursor-pointer" onclick="app.navigateTo('board', {id: '${p.id}'})">
+                        <div class="flex justify-between items-start mb-4">
+                            <h3 class="text-xl font-bold text-text tracking-tight group-hover:text-primary transition-colors truncate pr-8">${p.name}</h3>
+                            
+                            <div class="absolute top-6 right-6" onclick="event.stopPropagation()">
+                                <button onclick="this.nextElementSibling.classList.toggle('hidden')" class="w-8 h-8 flex items-center justify-center text-muted hover:text-text rounded-full hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-all">
+                                    <span class="material-symbols-outlined text-[20px]">more_vert</span>
+                                </button>
+                                <div class="dropdown-menu absolute right-0 top-9 z-20 w-32 hidden bg-surface border border-border shadow-2xl rounded-lg py-1 backdrop-blur-xl">
+                                    <button onclick="app.renameProject('${p.id}')" class="w-full text-left px-3 py-2 text-xs text-text hover:bg-white/5 flex items-center gap-2">
+                                        <span class="material-symbols-outlined text-[14px]">edit</span> Rename
+                                    </button>
+                                    <button onclick="app.deleteProject('${p.id}')" class="w-full text-left px-3 py-2 text-xs text-danger hover:bg-white/5 flex items-center gap-2">
+                                        <span class="material-symbols-outlined text-[14px]">delete</span> Delete
+                                    </button>
+                                </div>
+                            </div>
+                            </div>
+                        <div class="flex items-center gap-2 text-xs text-muted font-mono">
+                            <span class="w-1.5 h-1.5 rounded-full bg-border group-hover:bg-primary transition-colors"></span>
+                            Created: ${new Date(p.createdAt).toLocaleDateString()}
+                        </div>
+                    </div>
+                `).join('');
+            },
+
+            createProject() {
+                Modal.show({
+                    title: "Create Project",
+                    desc: "Enter a name for your new debug board.",
+                    bodyHTML: `<input id="new-proj-input" class="w-full bg-background border border-border rounded-lg px-3 py-2 text-text focus:ring-1 focus:ring-primary outline-none" placeholder="e.g. Q1 Website Launch">`,
+                    actions: [
+                        { text: "Cancel", class: "text-muted hover:text-text" },
+                        { text: "Create", class: "bg-primary text-white hover:bg-primary/80", onClick: () => {
+                            const val = $('#new-proj-input').value.trim();
+                            if(val) {
+                                this.pushHistory();
+                                const projects = Store.getProjects();
+                                const newId = Utils.uuid();
+                                projects.push({ id: newId, name: val, createdAt: Utils.date() });
+                                Store.saveProjects(projects);
+                                this.navigateTo('board', { id: newId });
+                                Toast.show("Project created", "success");
+                            }
+                        }}
+                    ]
+                });
+            },
+
+
+            renameProject(id) {
+                const projects = Store.getProjects();
+                const project = projects.find(p => p.id === id);
+                if (!project) return;
+
+                Modal.show({
+                    title: "Rename Project",
+                    bodyHTML: `<input id="rename-proj-input" class="w-full bg-background border border-border rounded-lg px-3 py-2 text-text focus:ring-1 focus:ring-primary outline-none" value="${project.name}">`,
+                    actions: [
+                        { text: "Cancel", class: "text-muted hover:text-text" },
+                        { 
+                            text: "Save", 
+                            class: "bg-primary text-white hover:bg-primary/80", 
+                            onClick: () => {
+                                const val = $('#rename-proj-input').value.trim();
+                                if (val) {
+                                    project.name = val;
+                                    Store.saveProjects(projects);
+                                    this.navigateTo('projects'); // 刷新列表
+                                    Toast.show("Project renamed");
+                                }
+                            }
+                        }
+                    ]
+                });
+                // 自动聚焦并全选文字，方便直接修改
+                setTimeout(() => $('#rename-proj-input').select(), 100);
+            },
+
+            deleteProject(id) {
+                Modal.show({
+                    title: "Delete Project?",
+                    desc: "This will remove the project and all its cards permanently.",
+                    actions: [
+                        { text: "Cancel", class: "text-muted hover:text-text" },
+                        { text: "Delete", class: "bg-danger text-white hover:bg-red-600", onClick: () => {
+                            this.pushHistory();
+                            const projects = Store.getProjects().filter(p => p.id !== id);
+                            const tasks = Store.getTasks().filter(t => t.projectId !== id);
+                            Store.saveProjects(projects);
+                            Store.saveTasks(tasks);
+                            this.navigateTo('projects');
+                            Toast.show("Project deleted", "warning");
+                        }}
+                    ]
+                });
+            },
+
+            setFilterQuery(value) {
+                this.filterQuery = (value || "").toLowerCase();
+
+                // 让筛选状态更清晰：有内容时高亮搜索框
+                const input = document.querySelector('#header-search input');
+                if (input) {
+                    if (this.filterQuery) {
+                        input.classList.add('border-primary', 'ring-1', 'ring-primary');
+                    } else {
+                        input.classList.remove('border-primary', 'ring-1', 'ring-primary');
+                    }
+                }
+
+                this.renderBoardLists();
+            },
+
+            renderBoardLists() {
+                const allTasks = Store.getTasks().filter(t => t.projectId === this.currentProjectId);
+                const query = this.filterQuery;
+                let totalAll = 0;
+                let doneAll = 0;
+
+                ['low', 'medium', 'high'].forEach(priority => {
+                    const listEl = document.getElementById(`list-${priority}`);
+                    const countEl = document.getElementById(`count-${priority}`);
+                    const progressEl = document.getElementById(`progress-${priority}`);
+                    if(!listEl) return;
+
+                    // 这一列的所有任务（用于统计和进度条）
+                    const colAll = allTasks.filter(t => t.priority === priority);
+                    const doneCount = colAll.filter(t => t.status === 'done').length;
+                    const totalCount = colAll.length;
+                    totalAll += totalCount;
+                    doneAll += doneCount;
+
+                    // 排序：Todo 在上，按创建时间倒序
+                    colAll.sort((a, b) => {
+                        if (a.status === b.status) return new Date(b.createdAt) - new Date(a.createdAt);
+                        return (a.status === 'done' ? 1 : 0) - (b.status === 'done' ? 1 : 0);
+                    });
+
+                    // 应用搜索过滤，只影响列表展示，不影响统计
+                    const colVisible = query
+                        ? colAll.filter(t => (t.content || "").toLowerCase().includes(query))
+                        : colAll;
+                    
+                    const todoCount = totalCount - doneCount;
+                    countEl.textContent = todoCount;
+                    countEl.setAttribute('data-stats', `Total: ${totalCount} / Done: ${doneCount}`);
+                    
+                    const percentage = totalCount === 0 ? 0 : (doneCount / totalCount) * 100;
+                    progressEl.style.width = `${percentage}%`;
+
+                    if (colVisible.length === 0) {
+                        listEl.innerHTML = `<div class="h-full flex flex-col items-center justify-center text-muted/20 select-none pointer-events-none">
+                            <span class="material-symbols-outlined text-4xl mb-2">inbox</span>
+                            <span class="text-xs font-medium">${query ? 'No tasks match search' : 'No tasks yet...'}</span>
+                        </div>`;
+                    } else {
+                        listEl.innerHTML = colVisible.map(t => this.createTaskHTML(t)).join('');
+                    }
+                });
+
+                // 顶部汇总：总任务 / Done
+                const headerSummary = $('#header-summary');
+                if (headerSummary) {
+                    if (totalAll === 0) {
+                        headerSummary.textContent = '';
+                    } else {
+                        headerSummary.textContent = `Tasks: ${totalAll} · Done: ${doneAll}`;
+                    }
+                }
+            },
+
+            createTaskHTML(task) {
+                const isDone = task.status === 'done';
+                return `
+                    <div id="${task.id}" class="task-card group relative bg-white/5 border ${isDone ? 'border-transparent opacity-40' : 'border-white/5 hover:border-muted/30'} rounded-lg p-3 cursor-move mb-2 select-none"
+                         draggable="true" 
+                         ondragstart="app.drag(event, '${task.id}')">
+                        <div class="flex justify-between items-start gap-3">
+                            <div class="flex-grow cursor-pointer pt-0.5 task-main" onclick="app.toggleTaskStatus('${task.id}')">
+                                <p class="task-text ${isDone ? 'line-through text-muted decoration-muted/50' : 'text-text'} text-sm font-medium leading-relaxed whitespace-pre-wrap">${task.content}</p>
+                            </div>
+                            <div class="relative shrink-0">
+                                <button onclick="event.stopPropagation(); this.nextElementSibling.classList.toggle('hidden')" class="w-6 h-6 flex items-center justify-center text-muted/50 hover:text-text rounded-md hover:bg-white/10 opacity-0 group-hover:opacity-100 transition-all">
+                                    <span class="material-symbols-outlined text-[16px]">more_horiz</span>
+                                </button>
+                                <div class="dropdown-menu absolute right-0 top-6 z-50 w-36 hidden bg-surface border border-border shadow-2xl rounded-lg py-1 backdrop-blur-xl">
+                                    <button onclick="app.copyTask('${task.id}')" class="w-full text-left px-3 py-2 text-xs text-text hover:bg-white/5 flex items-center gap-2">
+                                        <span class="material-symbols-outlined text-[14px]">content_copy</span> Copy for AI
+                                    </button>
+                                    <button onclick="app.editTask('${task.id}')" class="w-full text-left px-3 py-2 text-xs text-text hover:bg-white/5 flex items-center gap-2">
+                                        <span class="material-symbols-outlined text-[14px]">edit</span> Edit
+                                    </button>
+                                    <button onclick="app.deleteTask('${task.id}')" class="w-full text-left px-3 py-2 text-xs text-danger hover:bg-white/5 flex items-center gap-2">
+                                        <span class="material-symbols-outlined text-[14px]">delete</span> Delete
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            },
+
+            handleAddTask(e, priority) {
+                if (e.isComposing || e.keyCode === 229) return;
+                if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    const content = e.target.value.trim();
+                    if(!content) return;
+                    const newTask = { id: Utils.uuid(), projectId: this.currentProjectId, content, priority, status: 'todo', createdAt: Utils.date() };
+                    const tasks = Store.getTasks();
+                    this.pushHistory();
+                    tasks.push(newTask);
+                    Store.saveTasks(tasks);
+                    
+                    this.renderBoardLists();
+                    e.target.value = '';
+                    e.target.style.height = 'auto'; 
+                }
+            },
+
+            toggleTaskStatus(id) {
+                const tasks = Store.getTasks();
+                const task = tasks.find(t => t.id === id);
+                if (task) {
+                    this.pushHistory();
+                    task.status = task.status === 'todo' ? 'done' : 'todo';
+                    Store.saveTasks(tasks);
+                    this.renderBoardLists();
+                }
+            },
+
+            // 卡片内联编辑态
+            editTask(id) {
+                const tasks = Store.getTasks();
+                const task = tasks.find(t => t.id === id);
+                if(!task) return;
+
+                const card = document.getElementById(id);
+                if (!card) return;
+
+                const main = card.querySelector('.task-main');
+                const dropdown = card.querySelector('.dropdown-menu');
+                if (dropdown) dropdown.classList.add('hidden');
+
+                // 关闭点击切换状态
+                main.onclick = null;
+
+                main.innerHTML = `
+                    <textarea
+                        class="w-full bg-background border border-border rounded-lg px-3 py-2 text-sm text-text focus:ring-1 focus:ring-primary outline-none resize-none mb-2"
+                        style="max-height: 10rem; overflow-y: hidden;"
+                    >${task.content}</textarea>
+                    <div class="flex justify-end gap-2 text-[11px]">
+                        <button type="button" data-role="cancel" class="px-2 py-1 rounded-md bg-surface_hover text-muted hover:text-text">Cancel</button>
+                        <button type="button" data-role="save" class="px-2 py-1 rounded-md bg-primary text-white hover:bg-primary/80">Save</button>
+                    </div>
+                `;
+
+                const textarea = main.querySelector('textarea');
+                const cancelBtn = main.querySelector('[data-role="cancel"]');
+                const saveBtn = main.querySelector('[data-role="save"]');
+
+                textarea.focus();
+                textarea.setSelectionRange(textarea.value.length, textarea.value.length);
+
+                const autoResize = () => {
+                    textarea.style.height = 'auto';
+                    const max = 160; // px，对应上面 max-height: 10rem 左右
+                    const newHeight = Math.min(textarea.scrollHeight, max);
+                    textarea.style.height = newHeight + 'px';
+                    textarea.style.overflowY = textarea.scrollHeight > max ? 'auto' : 'hidden';
+                };
+
+                // 初次进入编辑态时，先按内容计算一次高度
+                autoResize();
+                // 编辑过程中随内容变化
+                textarea.addEventListener('input', autoResize);
+
+
+
+                const finish = (save) => {
+                    if (save) {
+                        const val = textarea.value.trim();
+                        if (val) {
+                            this.pushHistory();
+                            task.content = val;
+                            Store.saveTasks(tasks);
+                        }
+                    }
+                    this.renderBoardLists();
+                };
+
+                cancelBtn.onclick = () => finish(false);
+                saveBtn.onclick = () => finish(true);
+
+                textarea.addEventListener('keydown', (e) => {
+                    if (e.key === 'Escape') {
+                        e.preventDefault();
+                        finish(false);
+                    } else if (e.key === 'Enter' && !e.shiftKey) {
+                        e.preventDefault();
+                        finish(true);
+                    }
+                });
+            },
+
+            deleteTask(id) {
+                this.pushHistory();
+                const tasks = Store.getTasks().filter(t => t.id !== id);
+                Store.saveTasks(tasks);
+                this.renderBoardLists();
+                Toast.show("Card deleted", "warning");
+            },
+            
+            copyTask(id) {
+                const tasks = Store.getTasks();
+                const task = tasks.find(t => t.id === id);
+                if(task) {
+                    const text = `[${task.priority.toUpperCase()}] ${task.content}`;
+                    navigator.clipboard.writeText(text).then(() => Toast.show("Copied for AI", "success"));
+                }
+            },
+
+            copyBoardForAI() {
+                const tasks = Store.getTasks().filter(
+                    t => t.projectId === this.currentProjectId && t.status !== 'done'
+                );
+                const project = Store.getProjects().find(p => p.id === this.currentProjectId);
+                if (!project || tasks.length === 0) {
+                    Toast.show("No active tasks to copy", "info");
+                    return;
+                }
+
+                // 顺序 HIGH -> MEDIUM -> LOW
+                const priorities = ["high", "medium", "low"];
+                let lines = [
+                    "你是一位有产品思维的专业全栈工程师，请帮我以最少改动的方式修复现有代码的以下问题，请不要修改与这些项目其他不相关的代码，并给我完整的html",
+                    "",
+                    `Project: ${project.name}`,
+                    ""
+                ];
+
+                priorities.forEach(p => {
+                    const colTasks = tasks.filter(t => t.priority === p);
+                    if (colTasks.length === 0) return;
+                    lines.push(`[${p.toUpperCase()}]`);
+                    colTasks.forEach(t => lines.push(`- ${t.content}`));
+                    lines.push("");
+                });
+
+                const text = lines.join("\n");
+                navigator.clipboard.writeText(text).then(() => {
+                    Toast.show("Board copied for AI", "success");
+                });
+            },
+
+            // Drag & Drop
+            drag(ev, id) { 
+                ev.dataTransfer.setData("text", id); 
+                ev.target.classList.add('card-dragging'); 
+            },
+            allowDrop(ev) { 
+                ev.preventDefault(); 
+                ev.currentTarget.classList.add('drag-over'); 
+            },
+            drop(ev, newPriority) {
+                ev.preventDefault();
+                document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+                document.querySelectorAll('.card-dragging').forEach(el => el.classList.remove('card-dragging'));
+                const taskId = ev.dataTransfer.getData("text");
+                const tasks = Store.getTasks();
+                const task = tasks.find(t => t.id === taskId);
+                if (task && task.priority !== newPriority) {
+                    this.pushHistory();
+                    task.priority = newPriority;
+                    Store.saveTasks(tasks);
+                    this.renderBoardLists();
+                }
+            },
+
+            exportCSV() {
+                const tasks = Store.getTasks().filter(t => t.projectId === this.currentProjectId);
+                const project = Store.getProjects().find(p => p.id === this.currentProjectId);
+                if (!project) return;
+
+                let csv = "\uFEFFID,Project,Content,Priority,Status,Created At\n";
+                tasks.forEach(t => { 
+                    csv += `${t.id},"${project.name.replace(/"/g, '""')}",${Utils.escapeCSV(t.content)},${t.priority},${t.status},${t.createdAt}\n`; 
+                });
+                const link = document.createElement("a");
+                const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                link.href = 'data:text/csv;charset=utf-8,' + encodeURI(csv);
+                link.download = `DEBUG_${project.name}_${timestamp}.csv`;
+                link.click();
+                Toast.show("Export CSV downloaded", "success");
+            },
+
+            importCSV(input) {
+                const file = input.files[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = (e) => {
+                    const rows = e.target.result.split('\n').slice(1);
+                    if(rows.length > 0) {
+                        this.pushHistory();
+                        const pid = Utils.uuid();
+                        const projects = Store.getProjects();
+                        const tasks = Store.getTasks();
+                        projects.push({ id: pid, name: `Imported ${new Date().toLocaleDateString()}`, createdAt: Utils.date() });
+                        let count = 0;
+                        rows.forEach(r => {
+                            if(!r.trim()) return;
+                            const parts = r.split(',');
+                            if (parts.length < 4) return;
+
+                            // Content 在第 3 列（索引2）
+                            let rawContent = parts[2].trim();
+                            if (rawContent.startsWith('"') && rawContent.endsWith('"')) {
+                                rawContent = rawContent.slice(1, -1).replace(/""/g, '"');
+                            }
+                            const content = rawContent;
+
+                            // Priority 在第 4 列（索引3）
+                            let priorityFromCSV = parts[3] ? parts[3].toLowerCase().replace(/"/g, '') : 'medium';
+                            if (!['low', 'medium', 'high'].includes(priorityFromCSV)) {
+                                priorityFromCSV = 'medium';
+                            }
+
+                            // Status 在第 5 列（索引4）
+                            let statusFromCSV = parts[4] ? parts[4].toLowerCase().replace(/"/g, '') : 'todo';
+                            if (!['todo', 'done'].includes(statusFromCSV)) {
+                                statusFromCSV = 'todo';
+                            }
+
+                            // CreatedAt 在第 6 列（索引5）
+                            let createdAt = parts[5] ? parts[5].trim().replace(/"/g, '') : Utils.date();
+
+                            if(content) {
+                                tasks.push({
+                                    id: Utils.uuid(),
+                                    projectId: pid,
+                                    content: content,
+                                    priority: priorityFromCSV,
+                                    status: statusFromCSV,
+                                    createdAt: createdAt || Utils.date()
+                                });
+                                count++;
+                            }
+                        });
+                        Store.saveProjects(projects); 
+                        Store.saveTasks(tasks);
+                        this.navigateTo('projects');
+                        Toast.show(`Imported ${count} tasks`, "success");
+                    }
+                    input.value = '';
+                };
+                reader.readAsText(file);
+            }
+        };
+
+        window.app = App;
+        window.onload = () => App.init();
+    </script>
+</body>
+</html>
