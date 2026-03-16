@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* 你的 tokens（从原来 <style> 挪过来） */
+:root {
+  --color-primary: #663399;
+  --kanban-accent: color-mix(in srgb, var(--color-primary) 90%, #000000 10%);
+  --prompt-accent: color-mix(in srgb, var(--color-primary) 75%, #ffffff 25%);
+  --kanban-accent-soft: color-mix(in srgb, var(--kanban-accent) 18%, transparent);
+  --prompt-accent-soft: color-mix(in srgb, var(--prompt-accent) 18%, transparent);
+}
+
